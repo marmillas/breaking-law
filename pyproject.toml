@@ -1,0 +1,17 @@
+[project]
+name = "breaking-law"
+version = "0.1.0"
+description = "AI powered API for legal document generation and automation"
+authors = [
+    {name = "Manuel Armillas",email = "marmillas@leitat.org"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi (>=0.136.1,<0.137.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
