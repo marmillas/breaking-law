@@ -6,9 +6,10 @@ All endpoints enforce tenant isolation and granular ACL via law_firm_id in JWT.
 """
 
 import uuid
+from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, status
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from breaking_law.api.deps import (
@@ -17,6 +18,7 @@ from breaking_law.api.deps import (
     get_storage,
     get_parser,
     get_current_user,
+    get_config,
     UserContext,
 )
 from breaking_law.documents.service import DocumentService
@@ -121,18 +123,29 @@ async def upload_document(
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "text/plain",
+        "image/png",
+        "image/jpeg",
     }
     mime_type = file.content_type or "application/octet-stream"
     if mime_type not in allowed_mimes:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {mime_type}. Allowed: PDF, DOCX, TXT",
+            detail=f"Unsupported file type: {mime_type}. Allowed: PDF, DOCX, TXT, PNG, JPEG",
         )
 
     # Read file content
     file_content = await file.read()
     if not file_content:
         raise HTTPException(status_code=400, detail="Empty file")
+
+    # Validate file size
+    cfg = get_config()
+    max_size_bytes = cfg.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(file_content) > max_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail="El archivo excede el límite de 50MB",
+        )
 
     # Build service
     storage = get_storage()
@@ -192,13 +205,31 @@ async def get_document(
 @router.get("/", response_model=List[DocumentOut])
 async def list_documents(
     matter_id: Optional[uuid.UUID] = None,
+    status: Optional[str] = Query(None, description="Filter by latest version parser status"),
+    document_type: Optional[str] = Query(None, description="Filter by document classification"),
+    client_id: Optional[uuid.UUID] = Query(None, description="Filter by associated matter's client ID"),
+    date_from: Optional[str] = Query(None, description="Filter by created_at >= ISO date"),
+    date_to: Optional[str] = Query(None, description="Filter by created_at <= ISO date"),
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_tenant_session),
     current_user: UserContext = Depends(get_current_user),
 ):
-    """List documents for the current law firm, optionally filtered by matter."""
+    """List documents for the current law firm with optional filters."""
     law_firm_id = current_user.law_firm_id
+
+    date_from_dt: Optional[datetime] = None
+    date_to_dt: Optional[datetime] = None
+    if date_from:
+        try:
+            date_from_dt = datetime.fromisoformat(date_from.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date_from format. Use ISO 8601.")
+    if date_to:
+        try:
+            date_to_dt = datetime.fromisoformat(date_to.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date_to format. Use ISO 8601.")
 
     storage = get_storage()
     audit = AuditService(db_session=db)
@@ -209,6 +240,11 @@ async def list_documents(
         law_firm_id=law_firm_id,
         user=current_user,
         matter_id=matter_id,
+        status=status,
+        document_type=document_type,
+        client_id=client_id,
+        date_from=date_from_dt,
+        date_to=date_to_dt,
         limit=limit,
         offset=offset,
     )
@@ -238,17 +274,28 @@ async def create_version(
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "text/plain",
+        "image/png",
+        "image/jpeg",
     }
     mime_type = file.content_type or "application/octet-stream"
     if mime_type not in allowed_mimes:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {mime_type}",
+            detail=f"Unsupported file type: {mime_type}. Allowed: PDF, DOCX, TXT, PNG, JPEG",
         )
 
     file_content = await file.read()
     if not file_content:
         raise HTTPException(status_code=400, detail="Empty file")
+
+    # Validate file size
+    cfg = get_config()
+    max_size_bytes = cfg.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(file_content) > max_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail="El archivo excede el límite de 50MB",
+        )
 
     storage = get_storage()
     audit = AuditService(db_session=db)

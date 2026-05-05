@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from breaking_law.infra.models import (
     Document, DocumentVersion, DocumentParseJob, DocumentExportJob,
-    ParserStatus, DocumentACL, AccessLevel,
+    ParserStatus, DocumentACL, AccessLevel, Matter,
 )
 from breaking_law.documents.storage import Storage
 from breaking_law.shared.audit import AuditService
@@ -536,11 +536,16 @@ class DocumentService:
         law_firm_id: uuid.UUID,
         user: UserContext,
         matter_id: Optional[uuid.UUID] = None,
+        status: Optional[str] = None,
+        document_type: Optional[str] = None,
+        client_id: Optional[uuid.UUID] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> List[Document]:
         """
-        List documents for a tenant with optional matter filter and ACL enforcement.
+        List documents for a tenant with optional filters and ACL enforcement.
 
         Only returns documents the user has read access to. Documents with no
         ACL entries are visible to all firm members (fallback behavior).
@@ -549,6 +554,11 @@ class DocumentService:
             law_firm_id: Tenant ID.
             user: Authenticated user context.
             matter_id: Optional matter filter.
+            status: Filter by latest version parser_status.
+            document_type: Filter by document classification.
+            client_id: Filter by associated matter's client_id.
+            date_from: Filter by created_at >= date_from.
+            date_to: Filter by created_at <= date_to.
             limit: Maximum results.
             offset: Pagination offset.
 
@@ -580,6 +590,33 @@ class DocumentService:
 
         if matter_id:
             stmt = stmt.where(Document.matter_id == matter_id)
+
+        if document_type:
+            stmt = stmt.where(Document.classification == document_type)
+
+        if date_from:
+            stmt = stmt.where(Document.created_at >= date_from)
+
+        if date_to:
+            stmt = stmt.where(Document.created_at <= date_to)
+
+        if client_id:
+            stmt = stmt.join(Matter, Document.matter_id == Matter.id).where(
+                Matter.client_id == client_id
+            )
+
+        if status:
+            # Filter by latest version parser_status using a correlated subquery
+            latest_version_status = (
+                select(DocumentVersion.parser_status)
+                .where(DocumentVersion.document_id == Document.id)
+                .order_by(DocumentVersion.version_number.desc())
+                .limit(1)
+                .correlate(Document)
+                .scalar_subquery()
+            )
+            stmt = stmt.where(latest_version_status == status)
+
         stmt = stmt.order_by(Document.created_at.desc()).limit(limit).offset(offset)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())

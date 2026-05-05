@@ -1,0 +1,29 @@
+:root {
+  // PrimeNG token overrides mapped to editorial theme
+  --p-primary-color: var(--color-gold);
+  --p-primary-color-text: #2c2c2c;
+  --p-surface-ground: var(--color-sepia);
+  --p-surface-card: var(--color-surface);
+  --p-surface-overlay: var(--color-surface);
+  --p-surface-border: var(--color-border);
+  --p-text-color: var(--color-text);
+  --p-text-secondary-color: var(--color-text-secondary);
+  --p-content-border-radius: 6px;
+  --p-focus-ring-color: var(--color-gold);
+  --p-focus-ring-width: 2px;
+
+  // Semantic color overrides
+  --p-green-500: var(--color-ready);
+  --p-orange-500: var(--color-pending);
+  --p-blue-500: var(--color-review);
+  --p-red-500: var(--color-critical);
+
+  // Button & input surface tokens
+  --p-button-primary-background: var(--color-gold);
+  --p-button-primary-hover-background: var(--color-gold-dark);
+  --p-button-primary-color: #ffffff;
+  --p-inputtext-background: var(--color-surface);
+  --p-inputtext-border-color: var(--color-border);
+  --p-inputtext-hover-border-color: var(--color-gold);
+  --p-inputtext-focus-border-color: var(--color-gold);
+}

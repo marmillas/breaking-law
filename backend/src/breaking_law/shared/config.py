@@ -58,6 +58,14 @@ class Config:
         self.EMBEDDING_DIMENSIONS: int = int(os.getenv("EMBEDDING_DIMENSIONS", "1536"))
         self.EMBEDDING_BATCH_SIZE: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "100"))
 
+        # Frontend CORS origins (comma-separated)
+        self.FRONTEND_ORIGINS: str = os.getenv(
+            "FRONTEND_ORIGINS", "http://localhost:4200"
+        )
+
+        # Upload limits
+        self.MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "50"))
+
         # OAuth configuration
         self.GOOGLE_CLIENT_ID: Optional[str] = os.getenv("GOOGLE_CLIENT_ID")
         self.GOOGLE_CLIENT_SECRET: Optional[str] = os.getenv("GOOGLE_CLIENT_SECRET")

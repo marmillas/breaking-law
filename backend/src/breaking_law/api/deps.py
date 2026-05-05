@@ -151,17 +151,8 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 # Authentication dependency (JWT)
 # ---------------------------------------------------------------------------
 
-async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db_session),
-) -> UserContext:
-    """
-    Resolve current user from JWT Bearer token.
-
-    Validates the token signature and expiry, sets the PostgreSQL RLS
-    tenant context using the `firm_id` claim in the JWT, then fetches
-    the user from the database to ensure the account is still active.
-    """
+async def _resolve_user_from_token(token: str, db: AsyncSession) -> UserContext:
+    """Shared helper to resolve a UserContext from a raw JWT string."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -211,6 +202,32 @@ async def get_current_user(
         role=user.role,
         full_name=user.full_name,
     )
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db_session),
+) -> UserContext:
+    """
+    Resolve current user from JWT Bearer token.
+
+    Validates the token signature and expiry, sets the PostgreSQL RLS
+    tenant context using the `firm_id` claim in the JWT, then fetches
+    the user from the database to ensure the account is still active.
+    """
+    return await _resolve_user_from_token(token, db)
+
+
+async def get_current_user_from_query_token(
+    token: str,
+    db: AsyncSession = Depends(get_db_session),
+) -> UserContext:
+    """
+    Resolve current user from a `token` query parameter.
+
+    Used by SSE/EventSource where custom headers are not supported.
+    """
+    return await _resolve_user_from_token(token, db)
 
 
 async def get_tenant_session(

@@ -6,8 +6,10 @@ user registration, and global logout.
 """
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +17,8 @@ from breaking_law.api.deps import get_db_session, get_tenant_session, get_config
 from breaking_law.infra.models import User as UserORM, LawFirm
 from breaking_law.identity.service import AuthService
 from breaking_law.identity.security import PasswordHasher
+from breaking_law.identity.oauth import GoogleOAuthProvider, MicrosoftOAuthProvider
+from breaking_law.identity.oauth_router import _create_state_jwt, _decode_state_jwt
 from breaking_law.shared.rls import set_tenant_context
 from breaking_law.domain.schemas.identity import (
     TokenResponse,
@@ -27,6 +31,12 @@ from breaking_law.domain.schemas.identity import (
     LogoutRequest,
 )
 from sqlalchemy import text
+
+
+class OAuthCallbackRequest(BaseModel):
+    """Request body for OAuth login callback."""
+    code: str
+    state: str
 
 router = APIRouter(
     prefix="/auth",
@@ -266,3 +276,136 @@ async def create_law_firm(
     await db.flush()
     await db.refresh(firm)
     return firm
+
+
+# ---------------------------------------------------------------------------
+# OAuth login endpoints (unauthenticated)
+# ---------------------------------------------------------------------------
+
+@router.get("/oauth/{provider}/login")
+async def oauth_login(
+    provider: str,
+    request: Request,
+):
+    """
+    Initiate OAuth login flow for Google or Microsoft.
+
+    Generates a PKCE code_verifier, encodes it into a short-lived state JWT,
+    and redirects the browser to the provider's consent screen.
+    """
+    cfg = get_config()
+    redirect_uri = f"{cfg.OAUTH_REDIRECT_BASE_URL}/auth/oauth/callback"
+
+    if provider == "google":
+        if not cfg.GOOGLE_CLIENT_ID or not cfg.GOOGLE_CLIENT_SECRET:
+            raise HTTPException(status_code=501, detail="Google OAuth is not configured")
+        oauth_provider = GoogleOAuthProvider(
+            client_id=cfg.GOOGLE_CLIENT_ID,
+            client_secret=cfg.GOOGLE_CLIENT_SECRET,
+            redirect_uri=redirect_uri,
+        )
+    elif provider == "microsoft":
+        if not cfg.MICROSOFT_CLIENT_ID or not cfg.MICROSOFT_CLIENT_SECRET:
+            raise HTTPException(status_code=501, detail="Microsoft OAuth is not configured")
+        oauth_provider = MicrosoftOAuthProvider(
+            client_id=cfg.MICROSOFT_CLIENT_ID,
+            client_secret=cfg.MICROSOFT_CLIENT_SECRET,
+            redirect_uri=redirect_uri,
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported provider. Use 'google' or 'microsoft'.")
+
+    verifier = oauth_provider.generate_code_verifier()
+    state = _create_state_jwt(verifier, cfg.SECRET_KEY)
+    url = oauth_provider.get_authorization_url(state=state, code_verifier=verifier)
+    return RedirectResponse(url)
+
+
+@router.post("/oauth/callback", response_model=TokenResponse)
+async def oauth_callback(
+    data: OAuthCallbackRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Handle OAuth login callback.
+
+    Exchanges the authorization code for tokens, finds or creates the user
+    by email, and returns a JWT access token + refresh token pair.
+    """
+    cfg = get_config()
+    verifier = _decode_state_jwt(data.state, cfg.SECRET_KEY)
+    redirect_uri = f"{cfg.OAUTH_REDIRECT_BASE_URL}/auth/oauth/callback"
+
+    # Determine provider from state is not encoded, so we try both.
+    # In a real system the state would encode the provider too.
+    # Here we attempt Google first, then Microsoft, based on which succeeds.
+    last_error = None
+    for provider_name, ProviderClass, client_id, client_secret in [
+        ("google", GoogleOAuthProvider, cfg.GOOGLE_CLIENT_ID, cfg.GOOGLE_CLIENT_SECRET),
+        ("microsoft", MicrosoftOAuthProvider, cfg.MICROSOFT_CLIENT_ID, cfg.MICROSOFT_CLIENT_SECRET),
+    ]:
+        if not client_id or not client_secret:
+            continue
+        provider = ProviderClass(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+        )
+        try:
+            tokens = await provider.exchange_code(data.code, verifier)
+            break
+        except Exception as exc:
+            last_error = exc
+            continue
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to exchange authorization code: {last_error}"
+        )
+
+    # Find or create user by email
+    result = await db.execute(
+        select(UserORM).where(UserORM.email == tokens.email)
+    )
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        # Auto-create a law firm and user for OAuth sign-up
+        firm_id = uuid.uuid4()
+        await set_tenant_context(db, str(firm_id))
+        firm = LawFirm(
+            id=firm_id,
+            name=tokens.email.split("@")[0],
+            timezone="Europe/Madrid",
+        )
+        db.add(firm)
+        await db.flush()
+
+        user = UserORM(
+            email=tokens.email,
+            full_name=tokens.email,
+            law_firm_id=firm.id,
+            role="owner",
+            hashed_password=None,
+        )
+        db.add(user)
+        await db.flush()
+        await db.refresh(user)
+
+    await set_tenant_context(db, str(user.law_firm_id))
+
+    auth_service = AuthService(
+        secret_key=cfg.SECRET_KEY,
+        algorithm=cfg.ALGORITHM,
+        access_token_expire_minutes=cfg.ACCESS_TOKEN_EXPIRE_MINUTES,
+    )
+
+    access_token = auth_service.create_access_token(data={
+        "sub": str(user.id),
+        "firm_id": str(user.law_firm_id),
+        "email": user.email,
+        "role": user.role,
+        "name": user.full_name,
+    })
+    refresh_token = await auth_service.create_refresh_token(user.id, user.law_firm_id, db)
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}

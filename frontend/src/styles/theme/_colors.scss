@@ -1,0 +1,55 @@
+@use 'variables' as *;
+
+// Semantic text colors
+.text-ready {
+  color: var(--color-ready);
+}
+
+.text-pending {
+  color: var(--color-pending);
+}
+
+.text-review {
+  color: var(--color-review);
+}
+
+.text-critical {
+  color: var(--color-critical);
+}
+
+.text-secondary {
+  color: var(--color-text-secondary);
+}
+
+// Semantic background tints
+.bg-ready-light {
+  background-color: rgba(45, 106, 79, 0.12);
+}
+
+.bg-pending-light {
+  background-color: rgba(188, 108, 37, 0.12);
+}
+
+.bg-review-light {
+  background-color: rgba(38, 70, 83, 0.12);
+}
+
+.bg-critical-light {
+  background-color: rgba(155, 34, 38, 0.12);
+}
+
+// Border utilities
+.border-gold {
+  border-color: var(--color-gold);
+}
+
+.border-sepia {
+  border-color: var(--color-sepia-dark);
+}
+
+// Surface utilities
+.surface-card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}

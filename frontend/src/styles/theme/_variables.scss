@@ -1,0 +1,40 @@
+:root {
+  // Editorial jurídica palette
+  --color-gold: #b8965a;
+  --color-gold-light: #c9a86c;
+  --color-gold-dark: #a07a3e;
+  --color-sepia: #f5f0e6;
+  --color-sepia-light: #faf7f0;
+  --color-sepia-dark: #e8dfcc;
+  --color-sidebar: #1a1a1a;
+  --color-sidebar-hover: #2a2a2a;
+  --color-sidebar-active: #333333;
+
+  // Text
+  --color-text: #2c2c2c;
+  --color-text-secondary: #6b5e4f;
+  --color-text-sidebar: #cccccc;
+  --color-text-sidebar-active: #ffffff;
+
+  // Semantic
+  --color-ready: #2d6a4f;
+  --color-pending: #bc6c25;
+  --color-review: #264653;
+  --color-critical: #9b2226;
+
+  // Surface
+  --color-surface: #ffffff;
+  --color-border: #d4c9b5;
+
+  // Typography
+  --font-heading: 'Libre Baskerville', Georgia, serif;
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+
+  // Spacing
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 64px;
+
+  // Transitions
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+}
