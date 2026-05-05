@@ -133,20 +133,21 @@ interface FilterOption {
           (action)="goToUpload()"
         ></app-empty-state>
       } @else {
-        <p-table
-          [value]="documents()"
-          [paginator]="true"
-          [rows]="pageSize"
-          [totalRecords]="totalRecords()"
-          [lazy]="true"
-          (onLazyLoad)="onLazyLoad($event)"
-          [sortField]="'created_at'"
-          [sortOrder]="-1"
-          [rowsPerPageOptions]="[10, 20, 50]"
-          styleClass="p-datatable-striped"
-          [scrollable]="true"
-          scrollHeight="flex"
-        >
+        <div class="table-wrapper">
+          <p-table
+            [value]="documents()"
+            [paginator]="true"
+            [rows]="pageSize"
+            [totalRecords]="totalRecords()"
+            [lazy]="true"
+            (onLazyLoad)="onLazyLoad($event)"
+            [sortField]="'created_at'"
+            [sortOrder]="-1"
+            [rowsPerPageOptions]="[10, 20, 50]"
+            styleClass="p-datatable-striped"
+            [scrollable]="true"
+            scrollHeight="flex"
+          >
           <ng-template pTemplate="header">
             <tr>
               <th pSortableColumn="title">
@@ -214,7 +215,8 @@ interface FilterOption {
               </td>
             </tr>
           </ng-template>
-        </p-table>
+          </p-table>
+        </div>
       }
     </div>
   `,
@@ -287,6 +289,10 @@ interface FilterOption {
     .actions {
       display: flex;
       gap: 0.25rem;
+    }
+
+    .table-wrapper {
+      overflow-x: auto;
     }
 
     .actions-col {

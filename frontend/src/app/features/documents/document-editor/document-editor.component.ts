@@ -284,6 +284,13 @@ interface AISuggestion {
       position: relative;
     }
 
+    @media (max-width: 1023px) {
+      .editor-layout {
+        flex-direction: column;
+        overflow-y: auto;
+      }
+    }
+
     .editor-main {
       flex: 1;
       overflow-y: auto;
@@ -292,6 +299,16 @@ interface AISuggestion {
 
     .editor-main.with-sidebar {
       padding-right: 1rem;
+    }
+
+    @media (max-width: 1023px) {
+      .editor-main {
+        overflow-y: visible;
+        padding: 1rem;
+      }
+      .editor-main.with-sidebar {
+        padding-right: 1rem;
+      }
     }
 
     .editor-paper {

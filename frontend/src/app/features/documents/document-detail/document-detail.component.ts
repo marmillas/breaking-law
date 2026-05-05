@@ -15,6 +15,7 @@ import { SkeletonLoaderComponent } from '../../../shared/components/skeleton-loa
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { ToastService } from '../../../core/http/toast.service';
+import { ScrollProgressDirective } from '../../../shared/directives/scroll-progress.directive';
 
 @Component({
   selector: 'app-document-detail',
@@ -32,9 +33,12 @@ import { ToastService } from '../../../core/http/toast.service';
     SkeletonLoaderComponent,
     EmptyStateComponent,
     ConfirmDialogComponent,
+    ScrollProgressDirective,
   ],
   template: `
     <div class="page-container">
+      <div appScrollProgress class="scroll-progress-bar"></div>
+
       @if (loading()) {
         <app-skeleton-loader variant="card" [count]="3"></app-skeleton-loader>
       } @else if (notFound()) {
@@ -187,6 +191,26 @@ import { ToastService } from '../../../core/http/toast.service';
   styles: [`
     .page-container {
       padding: 1.5rem;
+      position: relative;
+    }
+
+    .scroll-progress-bar {
+      position: fixed;
+      top: 0;
+      left: var(--sidebar-width);
+      right: 0;
+      height: 3px;
+      background-color: var(--color-gold);
+      transform-origin: left;
+      transform: scaleX(var(--scroll-progress, 0));
+      z-index: 30;
+      transition: transform 100ms linear;
+    }
+
+    @media (max-width: 767px) {
+      .scroll-progress-bar {
+        left: 0;
+      }
     }
 
     .detail-layout {
