@@ -1,0 +1,14 @@
+[Unit]
+Description=Breaking Law Dramatiq Workers
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=breaking-law
+WorkingDirectory=/opt/breaking-law
+ExecStart=/opt/breaking-law/venv/bin/dramatiq breaking_law.services.parse_worker breaking_law.services.export_worker breaking_law.services.deadline_worker breaking_law.services.retention_worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

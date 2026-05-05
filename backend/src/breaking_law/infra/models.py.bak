@@ -1,0 +1,564 @@
+"""
+SQLAlchemy ORM models for the legal platform.
+
+This module defines the database schema for documents, versions, audit events,
+and related entities. All multi-tenant tables include law_firm_id for tenant isolation.
+
+.. warning::
+   DEPLOYMENT RISK: The DocumentChunk model uses a Variant column type and production PostgreSQL must have pgvector installed.
+   Required: PostgreSQL with pgvector extension enabled (`CREATE EXTENSION vector;`).
+   Impact if missing: DocumentChunk table creation fails on PostgreSQL; embedding queries will not work in production. SQLite tests use JSON fallback automatically.
+"""
+
+import uuid
+import enum
+from datetime import datetime, UTC
+from typing import Optional, List
+
+from sqlalchemy import (
+    String, Text, Integer, Boolean, DateTime, ForeignKey, JSON, Enum, LargeBinary
+)
+from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from pgvector.sqlalchemy import Vector
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+class ParserStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    indexed = "indexed"
+
+
+class AccessLevel(str, enum.Enum):
+    read = "read"
+    write = "write"
+    owner = "owner"
+
+
+class TimeEntryStatus(str, enum.Enum):
+    draft = "draft"
+    submitted = "submitted"
+    approved = "approved"
+
+
+class DeadlinePriority(str, enum.Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+    critical = "critical"
+
+
+class DeadlineStatus(str, enum.Enum):
+    pending = "pending"
+    acknowledged = "acknowledged"
+    completed = "completed"
+    overdue = "overdue"
+
+
+class Document(Base):
+    """Represents a legal document with versioning and ACL support."""
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    matter_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    classification: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )
+    is_confidential: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+    retention_policy: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    deletion_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    versions: Mapped[List["DocumentVersion"]] = relationship(
+        back_populates="document",
+        order_by="DocumentVersion.version_number.desc()",
+        cascade="all, delete-orphan",
+    )
+
+
+class DocumentVersion(Base):
+    """Represents an immutable version of a document."""
+    __tablename__ = "document_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    sha256_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    parser_status: Mapped[ParserStatus] = mapped_column(
+        Enum(ParserStatus), default=ParserStatus.pending, nullable=False
+    )
+    extracted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+
+    document: Mapped["Document"] = relationship(back_populates="versions")
+    chunks: Mapped[List["DocumentChunk"]] = relationship(
+        back_populates="version",
+        order_by="DocumentChunk.chunk_index",
+        cascade="all, delete-orphan",
+    )
+    parse_jobs: Mapped[List["DocumentParseJob"]] = relationship(
+        back_populates="version",
+        order_by="DocumentParseJob.created_at.desc()",
+        cascade="all, delete-orphan",
+    )
+    export_jobs: Mapped[List["DocumentExportJob"]] = relationship(
+        back_populates="version",
+        order_by="DocumentExportJob.created_at.desc()",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        # Ensure version numbers are unique per document
+        {"sqlite_autoincrement": False},
+    )
+
+
+class LawFirm(Base):
+    """Represents a law firm (tenant) in the system."""
+    __tablename__ = "law_firms"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(100), default="Europe/Madrid", nullable=False)
+    settings: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+
+class User(Base):
+    """Represents a user of the system."""
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("law_firms.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    full_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    hashed_password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="assistant")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+
+class Client(Base):
+    """Represents a client of a law firm."""
+    __tablename__ = "clients"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+    matters: Mapped[List["Matter"]] = relationship(
+        back_populates="client",
+        cascade="all, delete-orphan",
+    )
+
+
+class Matter(Base):
+    """Represents a legal matter/case."""
+    __tablename__ = "matters"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+    client: Mapped["Client"] = relationship(back_populates="matters")
+
+
+class AuditEvent(Base):
+    """Immutable audit log entry for compliance and traceability."""
+    __tablename__ = "audit_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    resource_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    input_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    output_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    event_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False, index=True
+    )
+
+
+class DocumentParseJob(Base):
+    """Tracks background parsing jobs for document versions."""
+    __tablename__ = "document_parse_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+    result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+    version: Mapped["DocumentVersion"] = relationship(back_populates="parse_jobs")
+
+
+class DocumentExportJob(Base):
+    """Tracks background export jobs for document versions."""
+    __tablename__ = "document_export_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+    docx_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    pdf_storage_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    docx_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pdf_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+    version: Mapped["DocumentVersion"] = relationship(back_populates="export_jobs")
+
+
+class RefreshToken(Base):
+    """Stored refresh token for secure token rotation and replay detection."""
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    replaced_by_token_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    law_firm_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    family_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+
+
+class DocumentACL(Base):
+    """Granular access control entry for a document."""
+    __tablename__ = "document_acl"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    role: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    access_level: Mapped[AccessLevel] = mapped_column(
+        Enum(AccessLevel), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+
+
+class DocumentChunk(Base):
+    """Searchable chunk of a document version with embedding vector."""
+    __tablename__ = "document_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text_content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding = mapped_column(
+        JSON().with_variant(Vector(1536), "postgresql"),
+        nullable=True,
+    )
+    search_vector = mapped_column(
+        Text().with_variant(TSVECTOR(), "postgresql"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+
+    version: Mapped["DocumentVersion"] = relationship(back_populates="chunks")
+
+
+class TimeEntry(Base):
+    """Represents a time tracking entry for legal work."""
+    __tablename__ = "time_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    matter_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("matters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    client_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("clients.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    duration_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    billable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    billing_rate: Mapped[Optional[float]] = mapped_column(nullable=True)
+    status: Mapped[TimeEntryStatus] = mapped_column(
+        Enum(TimeEntryStatus), default=TimeEntryStatus.draft, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+
+class Deadline(Base):
+    """Represents a deadline for a legal matter."""
+    __tablename__ = "deadlines"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    matter_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("matters.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    due_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    priority: Mapped[DeadlinePriority] = mapped_column(
+        Enum(DeadlinePriority), default=DeadlinePriority.medium, nullable=False
+    )
+    status: Mapped[DeadlineStatus] = mapped_column(
+        Enum(DeadlineStatus), default=DeadlineStatus.pending, nullable=False
+    )
+    notification_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+
+class Notification(Base):
+    """Represents a user notification in the system."""
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    deadline_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("deadlines.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[DeadlinePriority] = mapped_column(
+        Enum(DeadlinePriority), default=DeadlinePriority.medium, nullable=False
+    )
+    read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+
+
+class EditorDraftStatus(str, enum.Enum):
+    draft = "draft"
+    saved = "saved"
+    exported = "exported"
+
+
+class EditorDraft(Base):
+    """Represents a browser-based document editor draft with autosave support."""
+    __tablename__ = "editor_drafts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    document_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    matter_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("matters.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    content: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    status: Mapped[EditorDraftStatus] = mapped_column(
+        Enum(EditorDraftStatus), default=EditorDraftStatus.draft, nullable=False
+    )
+    last_autosaved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, onupdate=_utc_now, nullable=False
+    )
+
+
+class EmailConnection(Base):
+    """Represents an OAuth-connected email account for a user."""
+    __tablename__ = "email_connections"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    law_firm_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    email_address: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_access_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    encrypted_refresh_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    token_expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    scopes: Mapped[str] = mapped_column(Text, nullable=False)
+    connected_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utc_now, nullable=False
+    )
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

@@ -1,0 +1,43 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - db
+    env_file: backend/.env
+
+  redis:
+    image: redis:7-alpine
+
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: legal_db
+      POSTGRES_USER: legal
+      POSTGRES_PASSWORD: legal_dev
+    ports:
+      - "5432:5432"
+
+  workers:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: dramatiq breaking_law.documents.worker_parse breaking_law.documents.worker_export breaking_law.timekeeping.worker_deadline breaking_law.retention.worker
+    depends_on:
+      - redis
+      - db
+    env_file: backend/.env
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
